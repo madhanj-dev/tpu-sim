@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tpu-sim: TPU Roofline & Throughput Simulator</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Include Chart.js for smooth data visualization -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <div>
+          <h1>tpu-sim</h1>
+          <p class="subtitle">Disaggregated Prefill/Decode LLM Roofline Simulator</p>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span class="badge badge-tpu">TPU Roofline Engine</span>
+        <span class="badge badge-api">API Extensible</span>
+      </div>
+    </header>
+
+    <main class="main-layout">
+      <!-- Sidebar Control Panel -->
+      <aside class="control-panel">
+        <h2>Simulation Settings</h2>
+
+        <!-- Model Selection -->
+        <div class="form-group">
+          <label for="modelSelect">Select LLM Model:</label>
+          <select id="modelSelect" class="form-control">
+            <!-- Populated via API -->
+          </select>
+          <div id="modelDetails" class="info-card"></div>
+        </div>
+
+        <!-- TPU Hardware Selection -->
+        <div class="form-group">
+          <label for="hardwareSelect">TPU Hardware Type:</label>
+          <select id="hardwareSelect" class="form-control">
+            <!-- Populated via API -->
+          </select>
+          <div id="hardwareDetails" class="info-card"></div>
+        </div>
+
+        <!-- TPU Count & Disaggregation -->
+        <div class="form-group">
+          <label for="numTpus">Total TPU Count ($N_{tpu}$):</label>
+          <div class="slider-with-input">
+            <input type="range" id="numTpusSlider" min="1" max="512" value="16" step="1">
+            <input type="number" id="numTpus" min="1" max="2048" value="16">
+          </div>
+        </div>
+
+        <div class="form-group disagg-box">
+          <label>Disaggregation Split (Prefill vs Decode):</label>
+          <div class="disagg-controls">
+            <div>
+              <span class="label-sub">Prefill TPUs ($N_{prefill}$):</span>
+              <input type="number" id="prefillTpus" min="1" value="8">
+            </div>
+            <div>
+              <span class="label-sub">Decode TPUs ($N_{decode}$):</span>
+              <input type="number" id="decodeTpus" min="1" value="8">
+            </div>
+          </div>
+          <button id="autoSplitBtn" class="btn-secondary btn-sm" style="margin-top: 6px;">⚖️ Auto Balance 50/50</button>
+        </div>
+
+        <!-- Sequence Lengths -->
+        <div class="form-group">
+          <label for="inputLen">Input Prompt Length ($L_{in}$):</label>
+          <input type="number" id="inputLen" class="form-control" value="2048" step="128" min="1">
+        </div>
+
+        <div class="form-group">
+          <label for="outputLen">Output Decode Length ($L_{out}$):</label>
+          <input type="number" id="outputLen" class="form-control" value="512" step="64" min="1">
+        </div>
+
+        <!-- Precision -->
+        <div class="form-group">
+          <label for="precisionSelect">Precision / Quantization:</label>
+          <select id="precisionSelect" class="form-control">
+            <option value="2.0" selected>bfloat16 / float16 (2 Bytes/param)</option>
+            <option value="1.0">INT8 / FP8 (1 Byte/param)</option>
+            <option value="0.5">INT4 / FP4 (0.5 Bytes/param)</option>
+          </select>
+        </div>
+
+        <!-- Advanced / Algorithm API Settings -->
+        <div class="form-group">
+          <label for="strategySelect">Roofline Algorithm Strategy:</label>
+          <select id="strategySelect" class="form-control">
+            <option value="standard" selected>Standard Roofline (Simple Approximation)</option>
+            <option value="detailed">Detailed (Quadratic Attn & TP Latency)</option>
+            <option value="custom">Dynamic Custom Formula API</option>
+          </select>
+        </div>
+
+        <!-- Custom Formula Section (Hidden by default unless custom is selected) -->
+        <div id="customFormulaBox" class="form-group formula-box hidden">
+          <h3>Custom Roofline Formula API</h3>
+          <p class="help-text">Modify calculation algorithms in real time:</p>
+          <label for="customPrefillFormula">Prefill Latency Formula (sec):</label>
+          <textarea id="customPrefillFormula" rows="2" class="form-control code-input" placeholder="(batch_size * active_params * 2 * input_len) / (prefill_tpus * tflops)"></textarea>
+          
+          <label for="customDecodeFormula">Decode Step Formula (sec):</label>
+          <textarea id="customDecodeFormula" rows="2" class="form-control code-input" placeholder="max((active_params * bytes_per_param) / (decode_tpus * memory_bw), (batch_size * 2 * active_params) / (decode_tpus * tflops))"></textarea>
+        </div>
+
+        <div class="form-group checkbox-group">
+          <label>
+            <input type="checkbox" id="includeKvCache" checked> Include KV Cache Memory Transfer in Decode
+          </label>
+        </div>
+
+        <button id="runSimBtn" class="btn-primary">▶ Run Roofline Simulation</button>
+      </aside>
+
+      <!-- Main Results Display Area -->
+      <section class="results-area">
+        <!-- Summary Cards -->
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <span class="metric-label">Max Interactivity</span>
+            <span id="metricMaxInteractivity" class="metric-value">--</span>
+            <span class="metric-unit">tokens/sec/user</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Peak System Throughput</span>
+            <span id="metricMaxThroughput" class="metric-value">--</span>
+            <span class="metric-unit">tokens/sec total</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Roofline Knee Batch</span>
+            <span id="metricKneeBatch" class="metric-value">--</span>
+            <span class="metric-unit">batch size</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">TTFT (Batch 1)</span>
+            <span id="metricTtft" class="metric-value">--</span>
+            <span class="metric-unit">ms</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">TPOT (Batch 1)</span>
+            <span id="metricTpot" class="metric-value">--</span>
+            <span class="metric-unit">ms</span>
+          </div>
+        </div>
+
+        <!-- Graph Section -->
+        <div class="chart-container">
+          <div class="chart-header">
+            <div>
+              <h2>Throughput vs Interactivity Tradeoff Curve</h2>
+              <p class="chart-subtitle">Interactivity ($1 / TPOT$) vs Output Token Throughput across Batch Sizes</p>
+            </div>
+            <div class="chart-actions">
+              <button id="toggleYAxisBtn" class="btn-secondary btn-sm">Switch X/Y Axes</button>
+              <button id="viewLatencyChartBtn" class="btn-secondary btn-sm">View Latency Curve</button>
+            </div>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="rooflineChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Data Table Section -->
+        <div class="table-container">
+          <div class="table-header">
+            <h3>Batch Sweep Simulation Breakdown</h3>
+            <button id="exportCsvBtn" class="btn-secondary btn-sm">📥 Export CSV</button>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Batch Size</th>
+                  <th>Interactivity (tok/s/user)</th>
+                  <th>Throughput (tok/s total)</th>
+                  <th>TTFT (ms)</th>
+                  <th>TPOT (ms)</th>
+                  <th>QPS</th>
+                  <th>E2E Latency (s)</th>
+                  <th>Decode State</th>
+                </tr>
+              </thead>
+              <tbody id="dataTableBody">
+                <!-- Populated via JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>tpu-sim Engine &bull; Roofline Model for Disaggregated TPU Inference &bull; Built with Python & standard web stack</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
