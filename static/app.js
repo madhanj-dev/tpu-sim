@@ -6,7 +6,7 @@ let modelsData = {};
 let hardwareData = {};
 let currentSimulationResult = null;
 let rooflineChart = null;
-let activeChartType = "concurrency"; // "concurrency" or "latency"
+let activeChartType = "tradeoff"; // "tradeoff" (Throughput/s/chip vs Throughput/s/user) or "latency"
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadInitialData();
@@ -130,9 +130,9 @@ function setupEventListeners() {
 
   // Chart view toggle
   document.getElementById("viewLatencyChartBtn").addEventListener("click", () => {
-    activeChartType = activeChartType === "concurrency" ? "latency" : "concurrency";
+    activeChartType = activeChartType === "tradeoff" ? "latency" : "tradeoff";
     document.getElementById("viewLatencyChartBtn").textContent = 
-      activeChartType === "concurrency" ? "View Latency Curve" : "View Concurrency Curve";
+      activeChartType === "tradeoff" ? "View Latency Curve" : "View Tradeoff Curve";
     renderChart();
   });
 
@@ -274,67 +274,53 @@ function renderChart() {
   }
 
   const datapoints = currentSimulationResult.datapoints;
-  const labels = datapoints.map(d => d.batch_size);
 
-  if (activeChartType === "concurrency") {
-    // Left Y-axis: Throughput / s / chip
-    // Right Y-axis: Throughput / s / user (Interactivity)
-    // X-axis: Concurrency (Batch Size)
+  if (activeChartType === "tradeoff") {
+    // Exact requested format:
+    // Y-Axis: Throughput / s / chip (tokens/sec/chip)
+    // X-Axis: Throughput / s / user (tokens/sec/user)
+    // Curve traced out by varying Concurrencies (batch sizes)
+
+    const chartPoints = datapoints.map(d => ({
+      x: d.interactivity_tps,              // X-axis: Throughput / s / user
+      y: d.throughput_per_chip_tps,        // Y-axis: Throughput / s / chip
+      concurrency: d.batch_size,
+      ttft: d.ttft_ms,
+      tpot: d.tpot_ms,
+      total_throughput: d.output_throughput_tps,
+      is_compute: d.decode_is_compute_bound
+    }));
 
     rooflineChart = new Chart(ctx, {
       type: 'line',
       data: {
-        labels: labels,
-        datasets: [
-          {
-            label: 'Throughput / s / chip (tokens/sec/chip)',
-            data: datapoints.map(d => d.throughput_per_chip_tps),
-            borderColor: '#58a6ff',
-            backgroundColor: 'rgba(88, 166, 255, 0.15)',
-            borderWidth: 3,
-            tension: 0.2,
-            fill: true,
-            yAxisID: 'y',
-            pointBackgroundColor: datapoints.map(d => d.decode_is_compute_bound ? '#3fb950' : '#58a6ff'),
-            pointRadius: 5
-          },
-          {
-            label: 'Throughput / s / user (Interactivity tok/s/user)',
-            data: datapoints.map(d => d.interactivity_tps),
-            borderColor: '#bc8cff',
-            backgroundColor: 'rgba(188, 140, 255, 0.15)',
-            borderWidth: 3,
-            borderDash: [5, 5],
-            tension: 0.2,
-            yAxisID: 'y1',
-            pointBackgroundColor: '#bc8cff',
-            pointRadius: 5
-          }
-        ]
+        datasets: [{
+          label: 'Throughput / s / chip vs Throughput / s / user',
+          data: chartPoints,
+          borderColor: '#58a6ff',
+          backgroundColor: 'rgba(88, 166, 255, 0.15)',
+          pointBackgroundColor: datapoints.map(d => d.decode_is_compute_bound ? '#3fb950' : '#d29922'),
+          pointRadius: 6,
+          pointHoverRadius: 9,
+          borderWidth: 3,
+          tension: 0.2,
+          fill: true
+        }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         scales: {
           x: {
-            title: { display: true, text: 'Concurrency (Batch Size)', color: '#8b949e', font: { size: 13, weight: 'bold' } },
+            type: 'linear',
+            title: { display: true, text: 'Throughput / s / user (tokens/sec/user)', color: '#bc8cff', font: { size: 13, weight: 'bold' } },
             grid: { color: '#30363d' },
             ticks: { color: '#c9d1d9' }
           },
           y: {
             type: 'linear',
-            display: true,
-            position: 'left',
             title: { display: true, text: 'Throughput / s / chip (tokens/sec/chip)', color: '#58a6ff', font: { size: 13, weight: 'bold' } },
             grid: { color: '#30363d' },
-            ticks: { color: '#c9d1d9' }
-          },
-          y1: {
-            type: 'linear',
-            display: true,
-            position: 'right',
-            title: { display: true, text: 'Throughput / s / user (tokens/sec/user)', color: '#bc8cff', font: { size: 13, weight: 'bold' } },
-            grid: { drawOnChartArea: false },
             ticks: { color: '#c9d1d9' }
           }
         },
@@ -342,15 +328,15 @@ function renderChart() {
           legend: { labels: { color: '#c9d1d9' } },
           tooltip: {
             callbacks: {
-              title: (items) => `Concurrency (Batch Size): ${items[0].label}`,
-              label: (item) => {
-                const dp = datapoints[item.dataIndex];
-                if (item.datasetIndex === 0) {
-                  return `Throughput / s / chip: ${dp.throughput_per_chip_tps.toLocaleString()} tok/s/chip`;
-                } else {
-                  return `Throughput / s / user: ${dp.interactivity_tps.toFixed(1)} tok/s/user (TPOT: ${dp.tpot_ms.toFixed(2)}ms)`;
-                }
-              }
+              title: (items) => `Concurrency (Batch Size): ${items[0].raw.concurrency}`,
+              label: (item) => [
+                `Throughput / s / chip: ${item.raw.y.toLocaleString(undefined, { maximumFractionDigits: 1 })} tok/s/chip`,
+                `Throughput / s / user: ${item.raw.x.toFixed(1)} tok/s/user`,
+                `Total Output Throughput: ${item.raw.total_throughput.toLocaleString(undefined, { maximumFractionDigits: 0 })} tok/s`,
+                `TPOT: ${item.raw.tpot.toFixed(2)} ms`,
+                `TTFT: ${item.raw.ttft.toFixed(1)} ms`,
+                `State: ${item.raw.is_compute ? 'Compute Bound' : 'Memory Bandwidth Bound'}`
+              ]
             }
           }
         }
@@ -359,6 +345,8 @@ function renderChart() {
 
   } else {
     // Latency (TTFT and TPOT) vs Concurrency
+    const labels = datapoints.map(d => d.batch_size);
+
     rooflineChart = new Chart(ctx, {
       type: 'line',
       data: {
