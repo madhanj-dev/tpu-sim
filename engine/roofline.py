@@ -14,9 +14,9 @@ from .hardware import HardwareConfig
 class SimulationConfig:
     model: ModelConfig
     hardware: HardwareConfig
-    num_tpus: int = 8               # Total TPUs in cluster
-    prefill_tpus: int = 4           # TPUs allocated to Prefill pool
-    decode_tpus: int = 4            # TPUs allocated to Decode pool
+    num_tpus: int = 16              # Total TPUs in cluster
+    prefill_tpus: int = 8           # TPUs allocated to Prefill pool
+    decode_tpus: int = 8            # TPUs allocated to Decode pool
     input_len: int = 2048           # Input prompt sequence length
     output_len: int = 512           # Output decode sequence length
     bytes_per_param: float = 2.0    # 2.0 for BF16/FP16, 1.0 for INT8/FP8, 0.5 for INT4
@@ -35,11 +35,12 @@ class SimulationConfig:
 
 @dataclass
 class BatchDataPoint:
-    batch_size: int
+    batch_size: int                # Concurrency (batch size)
     ttft_ms: float                 # Time to First Token (ms)
     tpot_ms: float                 # Time Per Output Token (ms)
-    interactivity_tps: float       # Tokens/sec per user stream (1000 / tpot_ms)
+    interactivity_tps: float       # Throughput / s / user (tokens/sec/user)
     output_throughput_tps: float   # Total system output tokens/sec
+    throughput_per_chip_tps: float # Throughput / s / chip (tokens/sec/chip)
     total_throughput_tps: float    # Total system prompt+output tokens/sec
     qps: float                     # Requests/sec completed
     e2e_latency_ms: float          # Total request latency (ms)
@@ -54,6 +55,7 @@ class SimulationResult:
     knee_point: Optional[BatchDataPoint]
     max_interactivity_tps: float
     max_throughput_tps: float
+    max_throughput_per_chip_tps: float
     datapoints: List[BatchDataPoint]
 
 
@@ -188,7 +190,7 @@ class DynamicFormulaRooflineStrategy(RooflineStrategy):
     Evaluates custom formulas provided by user/API.
     Exposes safe math environment with variables:
     batch_size, active_params, total_params, input_len, output_len,
-    tflops, memory_bw, bytes_per_param, num_tpus.
+    tflops, memory_bw, bytes_per_param, num_tpus, prefill_tpus, decode_tpus.
     """
     def __init__(self, prefill_formula: Optional[str], decode_formula: Optional[str]):
         self.prefill_formula = prefill_formula
@@ -220,7 +222,6 @@ class DynamicFormulaRooflineStrategy(RooflineStrategy):
             val = self._eval_safe(self.prefill_formula, ctx)
             return max(0.000001, val), True
         except Exception as e:
-            # Fallback if evaluation fails
             return self.standard.compute_prefill_latency_sec(config, batch_size)
 
     def compute_decode_step_latency_sec(self, config: SimulationConfig, batch_size: int) -> tuple[float, bool]:
@@ -291,11 +292,14 @@ class RooflineEngine:
             ttft_ms = time_prefill_sec * 1000.0
             tpot_ms = time_decode_step_sec * 1000.0
 
-            # Interactivity = 1 / TPOT (tokens/sec per user stream)
+            # Interactivity = Throughput / s / user (tokens/sec per user stream)
             interactivity_tps = 1.0 / time_decode_step_sec if time_decode_step_sec > 0 else 0.0
 
-            # Total System Output Token Throughput = Batch * Interactivity (tokens/sec)
+            # Total System Output Token Throughput (tokens/sec total)
             output_throughput_tps = b * interactivity_tps
+
+            # Throughput / s / chip (tokens/sec/chip) across cluster
+            throughput_per_chip_tps = output_throughput_tps / config.num_tpus if config.num_tpus > 0 else 0.0
 
             # Total End-to-End Latency
             e2e_latency_sec = time_prefill_sec + (config.output_len * time_decode_step_sec)
@@ -313,6 +317,7 @@ class RooflineEngine:
                 tpot_ms=round(tpot_ms, 3),
                 interactivity_tps=round(interactivity_tps, 2),
                 output_throughput_tps=round(output_throughput_tps, 2),
+                throughput_per_chip_tps=round(throughput_per_chip_tps, 2),
                 total_throughput_tps=round(total_throughput_tps, 2),
                 qps=round(qps, 3),
                 e2e_latency_ms=round(e2e_latency_ms, 2),
@@ -332,6 +337,7 @@ class RooflineEngine:
 
         max_interactivity = max((d.interactivity_tps for d in datapoints), default=0.0)
         max_throughput = max((d.output_throughput_tps for d in datapoints), default=0.0)
+        max_throughput_per_chip = max((d.throughput_per_chip_tps for d in datapoints), default=0.0)
 
         config_dict = {
             "model_name": config.model.name,
@@ -357,5 +363,6 @@ class RooflineEngine:
             knee_point=knee_point,
             max_interactivity_tps=max_interactivity,
             max_throughput_tps=max_throughput,
+            max_throughput_per_chip_tps=max_throughput_per_chip,
             datapoints=datapoints,
         )

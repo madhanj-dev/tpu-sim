@@ -87,6 +87,12 @@ body {
   border: 1px solid rgba(63, 185, 80, 0.3);
 }
 
+.badge-cache {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--accent-orange);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
 .badge-api {
   background: rgba(188, 140, 255, 0.15);
   color: var(--accent-purple);

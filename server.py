@@ -1,5 +1,6 @@
 """
 HTTP REST Server & Static File Server for TPU Simulator.
+Pre-computes baseline model/hardware simulations on startup for instant UI response.
 Listens on localhost (127.0.0.1).
 """
 
@@ -17,9 +18,63 @@ from engine.roofline import SimulationConfig, RooflineEngine, STRATEGIES
 
 STATIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "static"))
 
-# Dynamic custom models registered via API
+# Dynamic custom models & hardware registered via API
 CUSTOM_MODELS: dict[str, ModelConfig] = {}
 CUSTOM_HARDWARE: dict[str, HardwareConfig] = {}
+
+# Precomputed cache populated during server startup / init
+PRECOMPUTED_CACHE: dict[str, dict] = {}
+
+
+def generate_cache_key(model_name: str, hw_name: str, num_tpus: int, prefill_tpus: int, decode_tpus: int, input_len: int, output_len: int, bytes_per_param: float, strategy_name: str, include_kv_cache: bool) -> str:
+    return f"{model_name}|{hw_name}|{num_tpus}|{prefill_tpus}|{decode_tpus}|{input_len}|{output_len}|{bytes_per_param}|{strategy_name}|{include_kv_cache}"
+
+
+def initialize_precomputed_cache():
+    """
+    Pre-computes roofline results during server initialization
+    for all predefined models & hardware specs under standard defaults.
+    """
+    print("⚡ Initializing pre-computed simulation cache for instant UI readout...")
+    engine = RooflineEngine()
+    count = 0
+
+    default_tpu_counts = [8, 16, 32]
+    default_seq_lens = [(2048, 512), (4096, 1024)]
+
+    for model_name, model in PREDEFINED_MODELS.items():
+        for hw_name, hw in PREDEFINED_HARDWARE.items():
+            for num_tpus in default_tpu_counts:
+                prefill_tpus = num_tpus // 2
+                decode_tpus = num_tpus - prefill_tpus
+                for input_len, output_len in default_seq_lens:
+                    sim_config = SimulationConfig(
+                        model=model,
+                        hardware=hw,
+                        num_tpus=num_tpus,
+                        prefill_tpus=prefill_tpus,
+                        decode_tpus=decode_tpus,
+                        input_len=input_len,
+                        output_len=output_len,
+                        bytes_per_param=2.0,
+                        include_kv_cache=True,
+                        strategy_name="standard",
+                    )
+                    res = engine.run_simulation(sim_config)
+                    key = generate_cache_key(model_name, hw_name, num_tpus, prefill_tpus, decode_tpus, input_len, output_len, 2.0, "standard", True)
+                    
+                    PRECOMPUTED_CACHE[key] = {
+                        "is_precomputed": True,
+                        "config": res.config,
+                        "knee_point": res.knee_point.__dict__ if res.knee_point else None,
+                        "max_interactivity_tps": res.max_interactivity_tps,
+                        "max_throughput_tps": res.max_throughput_tps,
+                        "max_throughput_per_chip_tps": res.max_throughput_per_chip_tps,
+                        "datapoints": [dp.__dict__ for dp in res.datapoints],
+                    }
+                    count += 1
+
+    print(f"✅ Pre-computation complete: {count} baseline configurations cached.")
 
 
 class TPUSimRequestHandler(BaseHTTPRequestHandler):
@@ -48,6 +103,8 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
             self._handle_get_hardware()
         elif path == "/api/strategies":
             self._handle_get_strategies()
+        elif path == "/api/precomputed":
+            self._handle_get_precomputed()
         else:
             # Serve static files
             self._serve_static(path)
@@ -127,6 +184,12 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
         self._send_headers(200)
         self.wfile.write(json.dumps({"strategies": strategies}).encode("utf-8"))
 
+    def _handle_get_precomputed(self):
+        """Returns summary of available precomputed keys"""
+        keys = list(PRECOMPUTED_CACHE.keys())
+        self._send_headers(200)
+        self.wfile.write(json.dumps({"count": len(keys), "keys": keys}).encode("utf-8"))
+
     def _handle_post_model(self):
         try:
             body = self._read_json_body()
@@ -180,11 +243,9 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
 
-            # Resolve model
             model_name = body.get("model", "qwen3-397b").lower()
             model = CUSTOM_MODELS.get(model_name) or PREDEFINED_MODELS.get(model_name)
             if not model:
-                # If inline custom model parameters passed
                 if "model_custom" in body:
                     mc = body["model_custom"]
                     model = ModelConfig(
@@ -201,7 +262,6 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
                 else:
                     raise ValueError(f"Unknown model: {model_name}")
 
-            # Resolve hardware
             hw_name = body.get("hardware", "tpu-trillium").lower()
             hardware = CUSTOM_HARDWARE.get(hw_name) or PREDEFINED_HARDWARE.get(hw_name)
             if not hardware:
@@ -219,7 +279,7 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError(f"Unknown hardware: {hw_name}")
 
             num_tpus = int(body.get("num_tpus", 16))
-            prefill_ratio = float(body.get("prefill_ratio", 0.5)) # fraction of TPUs for prefill
+            prefill_ratio = float(body.get("prefill_ratio", 0.5))
             prefill_tpus = int(body.get("prefill_tpus", max(1, int(num_tpus * prefill_ratio))))
             decode_tpus = int(body.get("decode_tpus", max(1, num_tpus - prefill_tpus)))
 
@@ -231,6 +291,18 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
 
             custom_prefill_formula = body.get("custom_prefill_formula")
             custom_decode_formula = body.get("custom_decode_formula")
+            batch_sizes = body.get("batch_sizes")
+
+            # Check precomputed cache if standard parameters and default batch sizes
+            if not custom_prefill_formula and not custom_decode_formula and batch_sizes is None:
+                cache_key = generate_cache_key(
+                    model.name, hardware.name, num_tpus, prefill_tpus, decode_tpus,
+                    input_len, output_len, bytes_per_param, strategy_name, include_kv_cache
+                )
+                if cache_key in PRECOMPUTED_CACHE:
+                    self._send_headers(200)
+                    self.wfile.write(json.dumps(PRECOMPUTED_CACHE[cache_key]).encode("utf-8"))
+                    return
 
             sim_config = SimulationConfig(
                 model=model,
@@ -247,19 +319,19 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
                 custom_decode_formula=custom_decode_formula,
             )
 
-            batch_sizes = body.get("batch_sizes")
             if batch_sizes:
                 batch_sizes = [int(b) for b in batch_sizes]
 
             engine = RooflineEngine()
             result = engine.run_simulation(sim_config, batch_sizes=batch_sizes)
 
-            # Format response JSON
             res_dict = {
+                "is_precomputed": False,
                 "config": result.config,
                 "knee_point": result.knee_point.__dict__ if result.knee_point else None,
                 "max_interactivity_tps": result.max_interactivity_tps,
                 "max_throughput_tps": result.max_throughput_tps,
+                "max_throughput_per_chip_tps": result.max_throughput_per_chip_tps,
                 "datapoints": [dp.__dict__ for dp in result.datapoints],
             }
 
@@ -274,7 +346,6 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
         if rel_path in ("/", "", "/index.html"):
             rel_path = "/index.html"
 
-        # Sanitize path to prevent directory traversal
         filename = rel_path.lstrip("/")
         file_path = os.path.abspath(os.path.join(STATIC_DIR, filename))
 
@@ -288,7 +359,6 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"404 Not Found")
             return
 
-        # Determine MIME type
         ext = os.path.splitext(file_path)[1].lower()
         content_types = {
             ".html": "text/html; charset=utf-8",
@@ -311,6 +381,7 @@ class TPUSimRequestHandler(BaseHTTPRequestHandler):
 
 
 def run_server(port=8080):
+    initialize_precomputed_cache()
     server_address = ("127.0.0.1", port)
     httpd = HTTPServer(server_address, TPUSimRequestHandler)
     print(f"TPU Simulator Server running on http://127.0.0.1:{port}")

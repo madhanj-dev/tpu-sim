@@ -51,12 +51,11 @@ class TestEngine(unittest.TestCase):
         res = engine.run_simulation(cfg, batch_sizes=[1, 16, 64, 256])
 
         self.assertEqual(len(res.datapoints), 4)
-        # Check batch 1 interactivity > 0
         dp1 = res.datapoints[0]
         self.assertGreater(dp1.interactivity_tps, 0.0)
         self.assertGreater(dp1.output_throughput_tps, 0.0)
+        self.assertAlmostEqual(dp1.throughput_per_chip_tps, dp1.output_throughput_tps / 16.0, places=1)
 
-        # Batch 256 should have higher total system throughput than batch 1
         dp256 = res.datapoints[3]
         self.assertGreater(dp256.output_throughput_tps, dp1.output_throughput_tps)
 
@@ -64,7 +63,6 @@ class TestEngine(unittest.TestCase):
         model = get_model_config("gemma4")
         hw = get_hardware_config("tpu-trillium")
 
-        # Custom formula for prefill and decode
         prefill_f = "(batch_size * active_params * 2 * input_len) / (prefill_tpus * tflops)"
         decode_f = "(active_params * bytes_per_param) / (decode_tpus * memory_bw) + 0.001"
 
@@ -83,7 +81,6 @@ class TestEngine(unittest.TestCase):
         engine = RooflineEngine()
         res = engine.run_simulation(cfg, batch_sizes=[1, 4])
         self.assertEqual(len(res.datapoints), 2)
-        # TTFT for batch 1
         expected_ttft_sec = (1 * model.active_params * 2 * 1024) / (2 * hw.flops_per_sec)
         self.assertAlmostEqual(res.datapoints[0].ttft_ms, expected_ttft_sec * 1000.0, places=1)
 

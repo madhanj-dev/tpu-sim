@@ -19,6 +19,7 @@
         </div>
       </div>
       <div class="header-badges">
+        <span id="cacheBadge" class="badge badge-cache">⚡ Instant Precomputed</span>
         <span class="badge badge-tpu">TPU Roofline Engine</span>
         <span class="badge badge-api">API Extensible</span>
       </div>
@@ -127,7 +128,12 @@
         <!-- Summary Cards -->
         <div class="metrics-grid">
           <div class="metric-card">
-            <span class="metric-label">Max Interactivity</span>
+            <span class="metric-label">Peak Throughput / s / chip</span>
+            <span id="metricMaxThroughputPerChip" class="metric-value">--</span>
+            <span class="metric-unit">tokens/sec/chip</span>
+          </div>
+          <div class="metric-card">
+            <span class="metric-label">Max Throughput / s / user</span>
             <span id="metricMaxInteractivity" class="metric-value">--</span>
             <span class="metric-unit">tokens/sec/user</span>
           </div>
@@ -137,18 +143,13 @@
             <span class="metric-unit">tokens/sec total</span>
           </div>
           <div class="metric-card">
-            <span class="metric-label">Roofline Knee Batch</span>
+            <span class="metric-label">Roofline Knee Concurrency</span>
             <span id="metricKneeBatch" class="metric-value">--</span>
             <span class="metric-unit">batch size</span>
           </div>
           <div class="metric-card">
-            <span class="metric-label">TTFT (Batch 1)</span>
-            <span id="metricTtft" class="metric-value">--</span>
-            <span class="metric-unit">ms</span>
-          </div>
-          <div class="metric-card">
-            <span class="metric-label">TPOT (Batch 1)</span>
-            <span id="metricTpot" class="metric-value">--</span>
+            <span class="metric-label">TTFT / TPOT (Batch 1)</span>
+            <span id="metricTtftTpot" class="metric-value">--</span>
             <span class="metric-unit">ms</span>
           </div>
         </div>
@@ -157,11 +158,10 @@
         <div class="chart-container">
           <div class="chart-header">
             <div>
-              <h2>Throughput vs Interactivity Tradeoff Curve</h2>
-              <p class="chart-subtitle">Interactivity ($1 / TPOT$) vs Output Token Throughput across Batch Sizes</p>
+              <h2>Throughput & Interactivity vs Concurrency</h2>
+              <p class="chart-subtitle">Left Y-Axis: Throughput / s / chip &bull; Right Y-Axis: Throughput / s / user &bull; X-Axis: Concurrency (Batch Size)</p>
             </div>
             <div class="chart-actions">
-              <button id="toggleYAxisBtn" class="btn-secondary btn-sm">Switch X/Y Axes</button>
               <button id="viewLatencyChartBtn" class="btn-secondary btn-sm">View Latency Curve</button>
             </div>
           </div>
@@ -173,20 +173,20 @@
         <!-- Data Table Section -->
         <div class="table-container">
           <div class="table-header">
-            <h3>Batch Sweep Simulation Breakdown</h3>
+            <h3>Concurrency Sweep Performance Data</h3>
             <button id="exportCsvBtn" class="btn-secondary btn-sm">📥 Export CSV</button>
           </div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Batch Size</th>
-                  <th>Interactivity (tok/s/user)</th>
-                  <th>Throughput (tok/s total)</th>
+                  <th>Concurrency (Batch)</th>
+                  <th>Throughput / s / chip (tok/s/chip)</th>
+                  <th>Throughput / s / user (tok/s/user)</th>
+                  <th>Total System Throughput (tok/s)</th>
                   <th>TTFT (ms)</th>
                   <th>TPOT (ms)</th>
                   <th>QPS</th>
-                  <th>E2E Latency (s)</th>
                   <th>Decode State</th>
                 </tr>
               </thead>

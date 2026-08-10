@@ -6,8 +6,7 @@ let modelsData = {};
 let hardwareData = {};
 let currentSimulationResult = null;
 let rooflineChart = null;
-let activeChartType = "tradeoff"; // "tradeoff" or "latency"
-let isSwappedAxes = false;
+let activeChartType = "concurrency"; // "concurrency" or "latency"
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadInitialData();
@@ -85,8 +84,15 @@ function updateHardwareDetails() {
 }
 
 function setupEventListeners() {
-  document.getElementById("modelSelect").addEventListener("change", updateModelDetails);
-  document.getElementById("hardwareSelect").addEventListener("change", updateHardwareDetails);
+  // Model/Hardware selection changes trigger instant readout simulation
+  document.getElementById("modelSelect").addEventListener("change", () => {
+    updateModelDetails();
+    runSimulation();
+  });
+  document.getElementById("hardwareSelect").addEventListener("change", () => {
+    updateHardwareDetails();
+    runSimulation();
+  });
 
   // TPU Slider & Input sync
   const numTpusInput = document.getElementById("numTpus");
@@ -95,13 +101,18 @@ function setupEventListeners() {
   numTpusSlider.addEventListener("input", (e) => {
     numTpusInput.value = e.target.value;
     autoSplitTpus();
+    runSimulation();
   });
   numTpusInput.addEventListener("input", (e) => {
     numTpusSlider.value = e.target.value;
     autoSplitTpus();
+    runSimulation();
   });
 
-  document.getElementById("autoSplitBtn").addEventListener("click", autoSplitTpus);
+  document.getElementById("autoSplitBtn").addEventListener("click", () => {
+    autoSplitTpus();
+    runSimulation();
+  });
 
   // Strategy change handler
   document.getElementById("strategySelect").addEventListener("change", (e) => {
@@ -111,21 +122,17 @@ function setupEventListeners() {
     } else {
       customBox.classList.add("hidden");
     }
+    runSimulation();
   });
 
   // Run Simulation Button
   document.getElementById("runSimBtn").addEventListener("click", runSimulation);
 
-  // Chart view toggles
-  document.getElementById("toggleYAxisBtn").addEventListener("click", () => {
-    isSwappedAxes = !isSwappedAxes;
-    renderChart();
-  });
-
+  // Chart view toggle
   document.getElementById("viewLatencyChartBtn").addEventListener("click", () => {
-    activeChartType = activeChartType === "tradeoff" ? "latency" : "tradeoff";
+    activeChartType = activeChartType === "concurrency" ? "latency" : "concurrency";
     document.getElementById("viewLatencyChartBtn").textContent = 
-      activeChartType === "tradeoff" ? "View Latency Curve" : "View Tradeoff Curve";
+      activeChartType === "concurrency" ? "View Latency Curve" : "View Concurrency Curve";
     renderChart();
   });
 
@@ -188,7 +195,6 @@ async function runSimulation() {
     updateUI();
   } catch (err) {
     console.error("Simulation request failed:", err);
-    alert("Failed to connect to simulation server.");
   }
 }
 
@@ -197,7 +203,19 @@ function updateUI() {
 
   const res = currentSimulationResult;
 
+  // Cache indicator badge
+  const cacheBadge = document.getElementById("cacheBadge");
+  if (res.is_precomputed) {
+    cacheBadge.textContent = "⚡ Instant Precomputed Readout";
+    cacheBadge.className = "badge badge-cache";
+  } else {
+    cacheBadge.textContent = "🔄 Live Simulated";
+    cacheBadge.className = "badge badge-api";
+  }
+
   // Update Summary Metrics
+  const maxPerChip = res.max_throughput_per_chip_tps || (res.max_throughput_tps / res.config.num_tpus);
+  document.getElementById("metricMaxThroughputPerChip").textContent = maxPerChip.toLocaleString(undefined, { maximumFractionDigits: 1 });
   document.getElementById("metricMaxInteractivity").textContent = res.max_interactivity_tps.toFixed(1);
   document.getElementById("metricMaxThroughput").textContent = res.max_throughput_tps.toLocaleString(undefined, { maximumFractionDigits: 0 });
   
@@ -209,8 +227,7 @@ function updateUI() {
 
   const batch1 = res.datapoints.find(d => d.batch_size === 1) || res.datapoints[0];
   if (batch1) {
-    document.getElementById("metricTtft").textContent = batch1.ttft_ms.toFixed(1);
-    document.getElementById("metricTpot").textContent = batch1.tpot_ms.toFixed(2);
+    document.getElementById("metricTtftTpot").textContent = `${batch1.ttft_ms.toFixed(1)} / ${batch1.tpot_ms.toFixed(2)}`;
   }
 
   // Populate Data Table
@@ -236,12 +253,12 @@ function populateDataTable(datapoints, kneePoint) {
 
     tr.innerHTML = `
       <td><strong>${dp.batch_size}</strong> ${kneePoint && dp.batch_size === kneePoint.batch_size ? '⚡ (Knee)' : ''}</td>
+      <td><strong>${dp.throughput_per_chip_tps.toLocaleString(undefined, { maximumFractionDigits: 1 })}</strong></td>
       <td>${dp.interactivity_tps.toFixed(1)}</td>
       <td>${dp.output_throughput_tps.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
       <td>${dp.ttft_ms.toFixed(1)}</td>
       <td>${dp.tpot_ms.toFixed(2)}</td>
       <td>${dp.qps.toFixed(2)}</td>
-      <td>${(dp.e2e_latency_ms / 1000.0).toFixed(2)}s</td>
       <td>${stateTag}</td>
     `;
     tbody.appendChild(tr);
@@ -257,63 +274,67 @@ function renderChart() {
   }
 
   const datapoints = currentSimulationResult.datapoints;
+  const labels = datapoints.map(d => d.batch_size);
 
-  if (activeChartType === "tradeoff") {
-    // Interactivity vs Throughput Tradeoff Curve
-    const labels = datapoints.map(d => `B=${d.batch_size}`);
-    
-    let xData, yData, xTitle, yTitle;
-
-    if (!isSwappedAxes) {
-      xData = datapoints.map(d => d.interactivity_tps);
-      yData = datapoints.map(d => d.output_throughput_tps);
-      xTitle = "Interactivity (tokens/sec per user)";
-      yTitle = "Output Throughput (tokens/sec total)";
-    } else {
-      xData = datapoints.map(d => d.output_throughput_tps);
-      yData = datapoints.map(d => d.interactivity_tps);
-      xTitle = "Output Throughput (tokens/sec total)";
-      yTitle = "Interactivity (tokens/sec per user)";
-    }
-
-    const chartPoints = datapoints.map((d, i) => ({
-      x: xData[i],
-      y: yData[i],
-      batch: d.batch_size,
-      ttft: d.ttft_ms,
-      tpot: d.tpot_ms,
-      is_compute: d.decode_is_compute_bound
-    }));
+  if (activeChartType === "concurrency") {
+    // Left Y-axis: Throughput / s / chip
+    // Right Y-axis: Throughput / s / user (Interactivity)
+    // X-axis: Concurrency (Batch Size)
 
     rooflineChart = new Chart(ctx, {
       type: 'line',
       data: {
-        datasets: [{
-          label: 'Throughput vs Interactivity Curve',
-          data: chartPoints,
-          borderColor: '#58a6ff',
-          backgroundColor: 'rgba(88, 166, 255, 0.15)',
-          pointBackgroundColor: datapoints.map(d => d.decode_is_compute_bound ? '#3fb950' : '#d29922'),
-          pointRadius: 6,
-          pointHoverRadius: 9,
-          borderWidth: 3,
-          tension: 0.2,
-          fill: true
-        }]
+        labels: labels,
+        datasets: [
+          {
+            label: 'Throughput / s / chip (tokens/sec/chip)',
+            data: datapoints.map(d => d.throughput_per_chip_tps),
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88, 166, 255, 0.15)',
+            borderWidth: 3,
+            tension: 0.2,
+            fill: true,
+            yAxisID: 'y',
+            pointBackgroundColor: datapoints.map(d => d.decode_is_compute_bound ? '#3fb950' : '#58a6ff'),
+            pointRadius: 5
+          },
+          {
+            label: 'Throughput / s / user (Interactivity tok/s/user)',
+            data: datapoints.map(d => d.interactivity_tps),
+            borderColor: '#bc8cff',
+            backgroundColor: 'rgba(188, 140, 255, 0.15)',
+            borderWidth: 3,
+            borderDash: [5, 5],
+            tension: 0.2,
+            yAxisID: 'y1',
+            pointBackgroundColor: '#bc8cff',
+            pointRadius: 5
+          }
+        ]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         scales: {
           x: {
-            type: 'linear',
-            title: { display: true, text: xTitle, color: '#8b949e', font: { size: 13, weight: 'bold' } },
+            title: { display: true, text: 'Concurrency (Batch Size)', color: '#8b949e', font: { size: 13, weight: 'bold' } },
             grid: { color: '#30363d' },
             ticks: { color: '#c9d1d9' }
           },
           y: {
-            title: { display: true, text: yTitle, color: '#8b949e', font: { size: 13, weight: 'bold' } },
+            type: 'linear',
+            display: true,
+            position: 'left',
+            title: { display: true, text: 'Throughput / s / chip (tokens/sec/chip)', color: '#58a6ff', font: { size: 13, weight: 'bold' } },
             grid: { color: '#30363d' },
+            ticks: { color: '#c9d1d9' }
+          },
+          y1: {
+            type: 'linear',
+            display: true,
+            position: 'right',
+            title: { display: true, text: 'Throughput / s / user (tokens/sec/user)', color: '#bc8cff', font: { size: 13, weight: 'bold' } },
+            grid: { drawOnChartArea: false },
             ticks: { color: '#c9d1d9' }
           }
         },
@@ -321,14 +342,15 @@ function renderChart() {
           legend: { labels: { color: '#c9d1d9' } },
           tooltip: {
             callbacks: {
-              title: (items) => `Batch Size: ${items[0].raw.batch}`,
-              label: (item) => [
-                `Interactivity: ${item.raw.x.toFixed(1)} tok/s/user`,
-                `Throughput: ${item.raw.y.toLocaleString()} tok/s`,
-                `TPOT: ${item.raw.tpot.toFixed(2)} ms`,
-                `TTFT: ${item.raw.ttft.toFixed(1)} ms`,
-                `State: ${item.raw.is_compute ? 'Compute Bound' : 'Memory Bandwidth Bound'}`
-              ]
+              title: (items) => `Concurrency (Batch Size): ${items[0].label}`,
+              label: (item) => {
+                const dp = datapoints[item.dataIndex];
+                if (item.datasetIndex === 0) {
+                  return `Throughput / s / chip: ${dp.throughput_per_chip_tps.toLocaleString()} tok/s/chip`;
+                } else {
+                  return `Throughput / s / user: ${dp.interactivity_tps.toFixed(1)} tok/s/user (TPOT: ${dp.tpot_ms.toFixed(2)}ms)`;
+                }
+              }
             }
           }
         }
@@ -336,9 +358,7 @@ function renderChart() {
     });
 
   } else {
-    // Latency (TTFT and TPOT) Curve
-    const labels = datapoints.map(d => d.batch_size);
-
+    // Latency (TTFT and TPOT) vs Concurrency
     rooflineChart = new Chart(ctx, {
       type: 'line',
       data: {
@@ -367,7 +387,7 @@ function renderChart() {
         maintainAspectRatio: false,
         scales: {
           x: {
-            title: { display: true, text: 'Batch Size', color: '#8b949e' },
+            title: { display: true, text: 'Concurrency (Batch Size)', color: '#8b949e', font: { size: 13, weight: 'bold' } },
             grid: { color: '#30363d' },
             ticks: { color: '#c9d1d9' }
           },
@@ -375,7 +395,7 @@ function renderChart() {
             type: 'linear',
             display: true,
             position: 'left',
-            title: { display: true, text: 'TTFT (ms)', color: '#bc8cff' },
+            title: { display: true, text: 'TTFT (ms)', color: '#bc8cff', font: { size: 13, weight: 'bold' } },
             grid: { color: '#30363d' },
             ticks: { color: '#c9d1d9' }
           },
@@ -383,7 +403,7 @@ function renderChart() {
             type: 'linear',
             display: true,
             position: 'right',
-            title: { display: true, text: 'TPOT (ms)', color: '#3fb950' },
+            title: { display: true, text: 'TPOT (ms)', color: '#3fb950', font: { size: 13, weight: 'bold' } },
             grid: { drawOnChartArea: false },
             ticks: { color: '#c9d1d9' }
           }
@@ -399,10 +419,10 @@ function renderChart() {
 function exportCsv() {
   if (!currentSimulationResult) return;
   const datapoints = currentSimulationResult.datapoints;
-  let csv = "Batch Size,Interactivity (tok/s/user),Output Throughput (tok/s),TTFT (ms),TPOT (ms),QPS,E2E Latency (s),State\n";
+  let csv = "Concurrency (Batch),Throughput / s / chip (tok/s/chip),Throughput / s / user (tok/s/user),Total System Throughput (tok/s),TTFT (ms),TPOT (ms),QPS,State\n";
   datapoints.forEach(dp => {
     const state = dp.decode_is_compute_bound ? "Compute Bound" : "Memory Bound";
-    csv += `${dp.batch_size},${dp.interactivity_tps},${dp.output_throughput_tps},${dp.ttft_ms},${dp.tpot_ms},${dp.qps},${(dp.e2e_latency_ms/1000).toFixed(2)},${state}\n`;
+    csv += `${dp.batch_size},${dp.throughput_per_chip_tps},${dp.interactivity_tps},${dp.output_throughput_tps},${dp.ttft_ms},${dp.tpot_ms},${dp.qps},${state}\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv' });
