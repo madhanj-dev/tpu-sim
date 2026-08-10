@@ -94,25 +94,27 @@ function setupEventListeners() {
     runSimulation();
   });
 
-  // TPU Slider & Input sync
-  const numTpusInput = document.getElementById("numTpus");
-  const numTpusSlider = document.getElementById("numTpusSlider");
+  // TPU Count dropdown selection (Powers of 2: 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
+  const numTpusSelect = document.getElementById("numTpusSelect");
+  numTpusSelect.addEventListener("change", () => {
+    autoSplitTpus();
+    runSimulation();
+  });
 
-  numTpusSlider.addEventListener("input", (e) => {
-    numTpusInput.value = e.target.value;
-    autoSplitTpus();
-    runSimulation();
-  });
-  numTpusInput.addEventListener("input", (e) => {
-    numTpusSlider.value = e.target.value;
-    autoSplitTpus();
-    runSimulation();
-  });
+  // Prefill / Decode TPU input changes
+  document.getElementById("prefillTpus").addEventListener("change", runSimulation);
+  document.getElementById("decodeTpus").addEventListener("change", runSimulation);
 
   document.getElementById("autoSplitBtn").addEventListener("click", () => {
     autoSplitTpus();
     runSimulation();
   });
+
+  // Sequence lengths and precision live changes
+  document.getElementById("inputLen").addEventListener("change", runSimulation);
+  document.getElementById("outputLen").addEventListener("change", runSimulation);
+  document.getElementById("precisionSelect").addEventListener("change", runSimulation);
+  document.getElementById("includeKvCache").addEventListener("change", runSimulation);
 
   // Strategy change handler
   document.getElementById("strategySelect").addEventListener("change", (e) => {
@@ -125,7 +127,7 @@ function setupEventListeners() {
     runSimulation();
   });
 
-  // Run Simulation Button
+  // Run Simulation Button (manual trigger)
   document.getElementById("runSimBtn").addEventListener("click", runSimulation);
 
   // Chart view toggle
@@ -141,7 +143,7 @@ function setupEventListeners() {
 }
 
 function autoSplitTpus() {
-  const total = parseInt(document.getElementById("numTpus").value) || 16;
+  const total = parseInt(document.getElementById("numTpusSelect").value) || 16;
   const prefill = Math.max(1, Math.floor(total / 2));
   const decode = Math.max(1, total - prefill);
   document.getElementById("prefillTpus").value = prefill;
@@ -151,7 +153,7 @@ function autoSplitTpus() {
 async function runSimulation() {
   const modelKey = document.getElementById("modelSelect").value;
   const hwKey = document.getElementById("hardwareSelect").value;
-  const numTpus = parseInt(document.getElementById("numTpus").value) || 16;
+  const numTpus = parseInt(document.getElementById("numTpusSelect").value) || 16;
   const prefillTpus = parseInt(document.getElementById("prefillTpus").value) || 8;
   const decodeTpus = parseInt(document.getElementById("decodeTpus").value) || 8;
   const inputLen = parseInt(document.getElementById("inputLen").value) || 2048;
@@ -276,11 +278,6 @@ function renderChart() {
   const datapoints = currentSimulationResult.datapoints;
 
   if (activeChartType === "tradeoff") {
-    // Exact requested format:
-    // Y-Axis: Throughput / s / chip (tokens/sec/chip)
-    // X-Axis: Throughput / s / user (tokens/sec/user)
-    // Curve traced out by varying Concurrencies (batch sizes)
-
     const chartPoints = datapoints.map(d => ({
       x: d.interactivity_tps,              // X-axis: Throughput / s / user
       y: d.throughput_per_chip_tps,        // Y-axis: Throughput / s / chip

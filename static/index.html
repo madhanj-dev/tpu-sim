@@ -48,13 +48,22 @@
           <div id="hardwareDetails" class="info-card"></div>
         </div>
 
-        <!-- TPU Count & Disaggregation -->
+        <!-- TPU Count Selection (Limited to powers of 2) -->
         <div class="form-group">
-          <label for="numTpus">Total TPU Count ($N_{tpu}$):</label>
-          <div class="slider-with-input">
-            <input type="range" id="numTpusSlider" min="1" max="512" value="16" step="1">
-            <input type="number" id="numTpus" min="1" max="2048" value="16">
-          </div>
+          <label for="numTpusSelect">Total TPU Count ($N_{tpu}$):</label>
+          <select id="numTpusSelect" class="form-control">
+            <option value="1">1 TPU</option>
+            <option value="2">2 TPUs</option>
+            <option value="4">4 TPUs</option>
+            <option value="8">8 TPUs</option>
+            <option value="16" selected>16 TPUs</option>
+            <option value="32">32 TPUs</option>
+            <option value="64">64 TPUs</option>
+            <option value="128">128 TPUs</option>
+            <option value="256">256 TPUs</option>
+            <option value="512">512 TPUs</option>
+            <option value="1024">1024 TPUs</option>
+          </select>
         </div>
 
         <div class="form-group disagg-box">
